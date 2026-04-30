@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sicode"
+version = "0.1.0"
+description = "Claude Code 스타일의 대화형 sicode CLI (심플 에코 모드)"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [
+    { name = "kim-taehan", email = "kimtaehan11@gmail.com" }
+]
+keywords = ["cli", "repl", "sicode"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Operating System :: OS Independent",
+    "Environment :: Console",
+]
+# 외부 런타임 의존성 없음 (Python 표준 라이브러리만 사용).
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[project.scripts]
+sicode = "sicode.main:main"
+
+[tool.setuptools.packages.find]
+include = ["sicode*"]
+exclude = ["tests*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-q"

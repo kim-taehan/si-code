@@ -5,6 +5,7 @@
 """
 
 from sicode.modes.base import BaseMode
+from sicode.modes.ollama import OllamaClient, OllamaError, OllamaMode
 from sicode.modes.simple import SimpleMode
 
-__all__ = ["BaseMode", "SimpleMode"]
+__all__ = ["BaseMode", "OllamaClient", "OllamaError", "OllamaMode", "SimpleMode"]

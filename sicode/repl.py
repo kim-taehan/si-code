@@ -2,6 +2,10 @@
 
 REPL은 :class:`sicode.modes.base.BaseMode` 추상에만 의존하며, I/O 함수(``input_fn``,
 ``output_fn``)를 주입받을 수 있어 테스트가 용이하다 (DIP, 의존성 주입).
+
+슬래시 명령(``/exit``, ``/help`` 등) 처리는 :mod:`sicode.commands` 의 디스패처에
+위임한다. REPL 루프의 분기 로직은 명령 추가에 무관하게 고정되어 있어, 새 명령은
+:func:`sicode.commands.register` 호출만으로 동작한다 (OCP).
 """
 
 from __future__ import annotations
@@ -9,6 +13,12 @@ from __future__ import annotations
 from typing import Callable, Iterable, Optional
 
 from sicode import __version__
+from sicode.commands.base import CommandAction
+from sicode.commands.registry import (
+    SlashCommandRegistry,
+    default_registry,
+    dispatch_command,
+)
 from sicode.modes.base import BaseMode
 
 
@@ -33,12 +43,18 @@ def build_welcome_message(mode: BaseMode, version: str = __version__) -> str:
         f"sicode v{version} ({mode.name} mode)\n"
         "Ollama 서버가 실행 중이어야 합니다 (기본: http://localhost:11434).\n"
         "Type 'exit' or 'quit' to leave. Press Ctrl+C / Ctrl+D to abort.\n"
+        "Type /help to see available slash commands.\n"
     )
 
 
 def is_exit_command(user_input: str) -> bool:
-    """입력이 종료 명령어인지 판정한다 (앞뒤 공백 무시, 대소문자 무시)."""
+    """입력이 평문 종료 명령어인지 판정한다 (앞뒤 공백 무시, 대소문자 무시)."""
     return user_input.strip().lower() in EXIT_COMMANDS
+
+
+def is_slash_command(user_input: str) -> bool:
+    """입력이 슬래시 명령(``/`` 로 시작)인지 판정한다 (앞 공백 무시)."""
+    return user_input.lstrip().startswith("/")
 
 
 def run_repl(
@@ -47,11 +63,14 @@ def run_repl(
     prompt: str = DEFAULT_PROMPT,
     input_fn: Callable[[str], str] = input,
     output_fn: Callable[[str], None] = print,
+    registry: Optional[SlashCommandRegistry] = None,
 ) -> int:
     """REPL 루프를 실행한다.
 
     설계 메모:
         - 모드는 :class:`BaseMode` 추상으로 받아 구체 구현을 모른다 (DIP).
+        - 슬래시 명령은 :mod:`sicode.commands` 디스패처에 위임해, 새 명령 추가가
+          본 함수의 변경 없이 가능하도록 했다 (OCP).
         - ``input_fn`` / ``output_fn`` 을 주입 가능하게 해서 단위 테스트에서
           실제 표준 입출력을 사용하지 않고 검증할 수 있다.
 
@@ -60,11 +79,14 @@ def run_repl(
         prompt: 사용자에게 표시할 프롬프트.
         input_fn: 한 줄 입력을 받을 함수. 기본값은 내장 ``input``.
         output_fn: 한 줄 출력을 수행할 함수. 기본값은 내장 ``print``.
+        registry: 슬래시 명령 레지스트리. ``None`` 이면 모듈 전역
+            :data:`sicode.commands.default_registry` 를 사용한다.
 
     Returns:
         프로세스 종료 코드. 정상 종료는 0.
     """
     output_fn(build_welcome_message(mode))
+    active_registry = registry or default_registry
 
     while True:
         try:
@@ -79,6 +101,15 @@ def run_repl(
             output_fn("")
             output_fn("Interrupted. Goodbye!")
             return 0
+
+        # 슬래시 명령은 mode.handle 보다 우선 처리한다 (LLM 미전송).
+        if is_slash_command(user_input):
+            result = dispatch_command(user_input, registry=active_registry)
+            if result.output:
+                output_fn(result.output)
+            if result.action is CommandAction.EXIT:
+                return 0
+            continue
 
         if is_exit_command(user_input):
             output_fn("Goodbye!")
@@ -100,6 +131,7 @@ def run_repl_with_inputs(
     *,
     prompt: str = DEFAULT_PROMPT,
     output_fn: Optional[Callable[[str], None]] = None,
+    registry: Optional[SlashCommandRegistry] = None,
 ) -> list[str]:
     """테스트 편의 함수: 주어진 입력 시퀀스로 REPL을 한 번 실행한다.
 
@@ -111,6 +143,7 @@ def run_repl_with_inputs(
         inputs: 한 줄씩 공급할 입력 시퀀스.
         prompt: 프롬프트(테스트용으로 무시 가능).
         output_fn: 출력 함수. ``None`` 이면 결과를 리스트에 모은다.
+        registry: 슬래시 명령 레지스트리(테스트 격리용).
 
     Returns:
         ``output_fn`` 이 ``None`` 이었을 경우 출력된 라인들의 리스트.
@@ -127,5 +160,11 @@ def run_repl_with_inputs(
 
     actual_output = output_fn or (lambda line: captured.append(line))
 
-    run_repl(mode, prompt=prompt, input_fn=_input, output_fn=actual_output)
+    run_repl(
+        mode,
+        prompt=prompt,
+        input_fn=_input,
+        output_fn=actual_output,
+        registry=registry,
+    )
     return captured

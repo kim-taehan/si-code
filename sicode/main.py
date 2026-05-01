@@ -12,6 +12,7 @@ import os
 import sys
 from typing import Callable, Optional, Sequence
 
+from sicode.commands import default_registry, register_default_commands
 from sicode.modes.base import BaseMode
 from sicode.modes.ollama import (
     DEFAULT_HOST,
@@ -102,6 +103,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         argv = sys.argv[1:]
 
     mode = _select_mode(argv)
+    # 슬래시 명령 기본 셋(``/exit``, ``/quit``, ``/help``)을 명시적으로 등록한다.
+    # 이미 등록된 상태(같은 프로세스에서 main 두 번 호출 등)이면 무시한다.
+    if not default_registry.commands():
+        register_default_commands()
     # ``builtins.input`` / ``builtins.print`` 를 호출 시점에 조회해서 전달한다.
     # 이렇게 해야 테스트에서 ``monkeypatch.setattr("builtins.input", ...)`` 같은
     # 패치가 정상적으로 적용된다.

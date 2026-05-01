@@ -42,6 +42,8 @@ def build_welcome_message(mode: BaseMode, version: str = __version__) -> str:
     return (
         f"sicode v{version} ({mode.name} mode)\n"
         "Ollama 서버가 실행 중이어야 합니다 (기본: http://localhost:11434).\n"
+        "대화 히스토리가 자동으로 유지됩니다. /clear 로 초기화, "
+        "/system <텍스트> 로 시스템 메시지 설정.\n"
         "Type 'exit' or 'quit' to leave. Press Ctrl+C / Ctrl+D to abort.\n"
         "Type /help to see available slash commands.\n"
     )
@@ -104,7 +106,11 @@ def run_repl(
 
         # 슬래시 명령은 mode.handle 보다 우선 처리한다 (LLM 미전송).
         if is_slash_command(user_input):
-            result = dispatch_command(user_input, registry=active_registry)
+            # 명령에서 모드 상태(예: 대화 히스토리)에 접근할 수 있도록 현재
+            # 모드를 컨텍스트에 함께 실어 전달한다.
+            result = dispatch_command(
+                user_input, registry=active_registry, mode=mode
+            )
             if result.output:
                 output_fn(result.output)
             if result.action is CommandAction.EXIT:

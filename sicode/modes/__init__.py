@@ -5,6 +5,16 @@
 """
 
 from sicode.modes.base import BaseMode
+from sicode.modes.conversation import Conversation, DEFAULT_MAX_TURNS
 from sicode.modes.ollama import OllamaClient, OllamaError, OllamaMode
+from sicode.modes.ollama_chat import OllamaChatClient
 
-__all__ = ["BaseMode", "OllamaClient", "OllamaError", "OllamaMode"]
+__all__ = [
+    "BaseMode",
+    "Conversation",
+    "DEFAULT_MAX_TURNS",
+    "OllamaChatClient",
+    "OllamaClient",
+    "OllamaError",
+    "OllamaMode",
+]

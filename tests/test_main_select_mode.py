@@ -8,9 +8,9 @@ import sicode.main as main_module
 from sicode.modes.ollama import (
     DEFAULT_HOST,
     DEFAULT_MODEL,
-    OllamaClient,
     OllamaMode,
 )
+from sicode.modes.ollama_chat import OllamaChatClient
 
 
 class TestSelectModeDefault:
@@ -38,13 +38,15 @@ class TestSelectModeOllama:
     def test_ollama_mode_uses_defaults(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # 이슈 #11: 기본 클라이언트는 멀티턴 ``OllamaChatClient`` 이다
+        # (``/api/chat`` 엔드포인트). 단일 턴 ``OllamaClient`` 는 호환용으로 잔존.
         monkeypatch.delenv(main_module.ENV_OLLAMA_HOST, raising=False)
         monkeypatch.delenv(main_module.ENV_OLLAMA_MODEL, raising=False)
 
         mode = main_module._select_mode(["--mode", "ollama"])
         assert isinstance(mode, OllamaMode)
         client = mode._client  # type: ignore[attr-defined]
-        assert isinstance(client, OllamaClient)
+        assert isinstance(client, OllamaChatClient)
         assert client.host == DEFAULT_HOST
         assert client.model == DEFAULT_MODEL
         assert client.model == "llama3.1:8b"
@@ -57,7 +59,7 @@ class TestSelectModeOllama:
 
         mode = main_module._select_mode(["--mode", "ollama"])
         client = mode._client  # type: ignore[attr-defined]
-        assert isinstance(client, OllamaClient)
+        assert isinstance(client, OllamaChatClient)
         assert client.host == "http://example:9999"
         assert client.model == DEFAULT_MODEL
 

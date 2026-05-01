@@ -31,6 +31,7 @@ def build_welcome_message(mode: BaseMode, version: str = __version__) -> str:
     """
     return (
         f"sicode v{version} ({mode.name} mode)\n"
+        "Ollama 서버가 실행 중이어야 합니다 (기본: http://localhost:11434).\n"
         "Type 'exit' or 'quit' to leave. Press Ctrl+C / Ctrl+D to abort.\n"
     )
 

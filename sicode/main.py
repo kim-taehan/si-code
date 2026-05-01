@@ -19,7 +19,6 @@ from sicode.modes.ollama import (
     OllamaClient,
     OllamaMode,
 )
-from sicode.modes.simple import SimpleMode
 from sicode.repl import run_repl
 
 
@@ -27,10 +26,8 @@ from sicode.repl import run_repl
 ENV_OLLAMA_HOST: str = "SICODE_OLLAMA_HOST"
 ENV_OLLAMA_MODEL: str = "SICODE_OLLAMA_MODEL"
 
-
-def _build_simple_mode(_args: argparse.Namespace) -> BaseMode:
-    """``--mode simple`` 용 팩토리. 인자를 무시하고 SimpleMode 를 생성한다."""
-    return SimpleMode()
+#: ``--mode`` 의 기본값. 새 모드가 늘어나도 한 곳만 바꾸면 된다.
+DEFAULT_MODE_NAME: str = "ollama"
 
 
 def _build_ollama_mode(args: argparse.Namespace) -> BaseMode:
@@ -47,7 +44,6 @@ def _build_ollama_mode(args: argparse.Namespace) -> BaseMode:
 
 #: 모드 이름 -> 모드 팩토리 매핑. 새 모드를 추가할 때 이 딕셔너리에 한 줄만 더하면 된다 (OCP).
 MODES: "dict[str, Callable[[argparse.Namespace], BaseMode]]" = {
-    "simple": _build_simple_mode,
     "ollama": _build_ollama_mode,
 }
 
@@ -55,7 +51,7 @@ MODES: "dict[str, Callable[[argparse.Namespace], BaseMode]]" = {
 def _build_arg_parser() -> argparse.ArgumentParser:
     """CLI argparse 파서를 만든다.
 
-    - ``--mode`` : 사용할 모드 이름. 기본값은 ``simple``.
+    - ``--mode`` : 사용할 모드 이름. 기본값은 :data:`DEFAULT_MODE_NAME`.
     - ``--model`` : Ollama 모드에서 사용할 모델 이름. ``SICODE_OLLAMA_MODEL`` 보다 우선.
 
     호스트 URL 옵션은 의도적으로 노출하지 않는다(보안 제약: 환경 변수 전용).
@@ -67,15 +63,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--mode",
         choices=sorted(MODES.keys()),
-        default="simple",
-        help="실행할 모드 (기본값: simple).",
+        default=DEFAULT_MODE_NAME,
+        help=f"실행할 모드 (기본값: {DEFAULT_MODE_NAME}).",
     )
     parser.add_argument(
         "--model",
         default=None,
         help=(
             "Ollama 모드에서 사용할 모델 이름. "
-            f"미지정 시 환경 변수 {ENV_OLLAMA_MODEL} 또는 기본값을 사용."
+            f"미지정 시 환경 변수 {ENV_OLLAMA_MODEL} 또는 기본값({DEFAULT_MODEL})을 사용."
         ),
     )
     return parser

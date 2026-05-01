@@ -27,7 +27,7 @@ from sicode.modes.base import BaseMode
 DEFAULT_HOST: str = "http://localhost:11434"
 
 #: 기본 모델 이름. ``SICODE_OLLAMA_MODEL`` 또는 CLI ``--model`` 로 덮어쓸 수 있다.
-DEFAULT_MODEL: str = "llama3"
+DEFAULT_MODEL: str = "llama3.1:8b"
 
 #: 단일 요청에 대한 타임아웃(초).
 DEFAULT_TIMEOUT_SECONDS: float = 30.0

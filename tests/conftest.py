@@ -3,13 +3,29 @@
 REPL 및 CLI 테스트는 실제 Ollama 서버에 의존하지 않아야 하므로,
 :class:`BaseMode` 의 가벼운 인메모리 구현체(:class:`EchoMode`)를 여기에 정의해
 여러 테스트 모듈에서 재사용한다 (DIP, OCP).
+
+또한 슬래시 명령 전역 레지스트리(:data:`sicode.commands.default_registry`)가
+테스트 간 누수되지 않도록 ``autouse`` 픽스처로 매 테스트 전후에 초기화한다.
 """
 
 from __future__ import annotations
 
 from typing import List
 
+import pytest
+
+from sicode.commands.registry import default_registry
 from sicode.modes.base import BaseMode
+
+
+@pytest.fixture(autouse=True)
+def _isolate_slash_command_registry() -> "Iterator[None]":  # type: ignore[name-defined]
+    """전역 슬래시 명령 레지스트리를 매 테스트 전후로 초기화한다 (테스트 격리)."""
+    default_registry.reset()
+    try:
+        yield
+    finally:
+        default_registry.reset()
 
 
 class EchoMode(BaseMode):

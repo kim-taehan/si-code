@@ -9,6 +9,11 @@
 
 from __future__ import annotations
 
+import os
+import sys
+
+import pytest
+
 from pathlib import Path
 from typing import List, Optional
 
@@ -21,6 +26,7 @@ from sicode.init.command import (
     DEFAULT_BACKUP_SUFFIX,
     DEFAULT_OUTPUT_FILENAME,
     InitCommand,
+    UnsafeOutputPathError,
     WriteResult,
     write_snapshot_file,
 )
@@ -60,6 +66,101 @@ class TestWriteSnapshotFile:
         assert backup.exists()
         assert backup.read_text(encoding="utf-8") == "old"
         assert result.backup_path == backup
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="symlink 정책 테스트는 POSIX 환경 가정. Windows 는 권한 모델이 다르다.",
+)
+class TestWriteSnapshotFileSymlinkSafety:
+    """``write_snapshot_file`` 의 심볼릭 링크 보안 회귀 테스트.
+
+    PR #12 리뷰 라운드 2 [Critical]: SICODE.md 자리에 외부 파일을 가리키는
+    심볼릭 링크가 있을 때 ``shutil.copy2`` + ``Path.write_text`` 가 링크를
+    그대로 따라가 (1) 외부 파일 내용이 ``SICODE.md.bak`` 로 유출되고
+    (2) 외부 파일이 마크다운으로 덮어쓰이는 결함이 있었다. 본 테스트는
+    이 회귀를 영구적으로 막는다.
+    """
+
+    def test_refuses_when_target_is_symlink_to_external_file(
+        self, tmp_path: Path
+    ) -> None:
+        # 외부 "민감" 파일 - 절대로 백업/덮어쓰기되어선 안 됨.
+        external = tmp_path / "external_secret.txt"
+        external.write_text("SECRET CONTENT", encoding="utf-8")
+
+        # SICODE.md 자리에 외부 파일을 가리키는 심볼릭 링크 배치.
+        target = tmp_path / "SICODE.md"
+        os.symlink(str(external), str(target))
+        assert target.is_symlink()
+
+        with pytest.raises(UnsafeOutputPathError):
+            write_snapshot_file("new content", target)
+
+        # 외부 파일 내용은 그대로 보존되어야 한다(데이터 유출/변조 방지).
+        assert external.read_text(encoding="utf-8") == "SECRET CONTENT"
+        # 백업 파일이 만들어져선 안 된다.
+        backup = tmp_path / ("SICODE.md" + DEFAULT_BACKUP_SUFFIX)
+        assert not backup.exists()
+        # 링크 자체도 그대로 유지(우리가 건드리지 않음).
+        assert target.is_symlink()
+
+    def test_refuses_when_target_is_symlink_even_to_nonexistent(
+        self, tmp_path: Path
+    ) -> None:
+        # 깨진 심볼릭 링크여도 정책상 거부.
+        target = tmp_path / "SICODE.md"
+        os.symlink(str(tmp_path / "does_not_exist"), str(target))
+
+        with pytest.raises(UnsafeOutputPathError):
+            write_snapshot_file("data", target)
+
+        # 백업 / 실제 파일 모두 만들어져선 안 됨.
+        backup = tmp_path / ("SICODE.md" + DEFAULT_BACKUP_SUFFIX)
+        assert not backup.exists()
+        # 링크는 그대로.
+        assert target.is_symlink()
+
+    def test_refuses_when_backup_path_is_symlink(self, tmp_path: Path) -> None:
+        # SICODE.md 는 일반 파일, SICODE.md.bak 자리가 외부를 가리키는 심볼릭 링크.
+        # 이 경우 백업이 외부 파일을 덮어쓰는 식으로 변조하면 안 된다.
+        external = tmp_path / "external.txt"
+        external.write_text("EXTERNAL", encoding="utf-8")
+
+        target = tmp_path / "SICODE.md"
+        target.write_text("OLD", encoding="utf-8")
+        backup = tmp_path / ("SICODE.md" + DEFAULT_BACKUP_SUFFIX)
+        os.symlink(str(external), str(backup))
+        assert backup.is_symlink()
+
+        with pytest.raises(UnsafeOutputPathError):
+            write_snapshot_file("NEW", target)
+
+        # 외부 파일은 변조되지 않아야 함.
+        assert external.read_text(encoding="utf-8") == "EXTERNAL"
+        # 원본 파일도 변하지 않아야 함(거부 후엔 어떤 쓰기도 일어나지 않는다).
+        assert target.read_text(encoding="utf-8") == "OLD"
+        # 백업 링크는 그대로.
+        assert backup.is_symlink()
+
+    def test_normal_flow_still_works_alongside_unrelated_symlinks(
+        self, tmp_path: Path
+    ) -> None:
+        # 같은 디렉토리에 무관한 심볼릭 링크가 있어도 정상 흐름은 영향받지 않음.
+        unrelated_target = tmp_path / "unrelated.txt"
+        unrelated_target.write_text("unrelated", encoding="utf-8")
+        os.symlink(str(unrelated_target), str(tmp_path / "unrelated.lnk"))
+
+        target = tmp_path / "SICODE.md"
+        target.write_text("OLD", encoding="utf-8")
+        result = write_snapshot_file("NEW", target)
+        assert target.read_text(encoding="utf-8") == "NEW"
+        backup = tmp_path / ("SICODE.md" + DEFAULT_BACKUP_SUFFIX)
+        assert backup.exists() and not backup.is_symlink()
+        assert backup.read_text(encoding="utf-8") == "OLD"
+        assert result.backup_path == backup
+        # 무관한 외부 파일은 그대로.
+        assert unrelated_target.read_text(encoding="utf-8") == "unrelated"
 
 
 class TestInitCommandUnit:

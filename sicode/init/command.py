@@ -17,7 +17,7 @@
 
 from __future__ import annotations
 
-import shutil
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional, Protocol
@@ -45,6 +45,15 @@ class ProjectSummarizer(Protocol):
         ...
 
 
+class UnsafeOutputPathError(OSError):
+    """``write_snapshot_file`` 이 보안 정책상 거부한 출력 경로.
+
+    구체적으로 ``output_path`` 자체 또는 백업 대상 경로가 심볼릭 링크인 경우.
+    심볼릭 링크를 따라가면 ``shutil.copy2`` / ``Path.write_text`` 가 외부 임의
+    파일을 백업/덮어쓸 수 있어 보안 결함이 된다(데이터 유출/임의 파일 변조).
+    """
+
+
 @dataclass(frozen=True)
 class WriteResult:
     """파일 저장 결과.
@@ -58,6 +67,18 @@ class WriteResult:
     backup_path: Optional[Path]
 
 
+def _is_symlink(path: Path) -> bool:
+    """``Path.is_symlink`` 의 ``OSError`` 안전 래퍼.
+
+    ``lstat`` 호출이 권한 등으로 실패한 경우 보수적으로 ``True`` (심볼릭 가능성)
+    로 간주해 호출자가 거부하도록 만든다.
+    """
+    try:
+        return path.is_symlink()
+    except OSError:
+        return True
+
+
 def write_snapshot_file(
     markdown: str,
     output_path: Path,
@@ -69,6 +90,16 @@ def write_snapshot_file(
     백업은 ``output_path`` 와 같은 디렉토리에서 같은 파일명에 ``backup_suffix`` 를
     덧붙인 경로로 생성된다(기존 백업이 있으면 덮어쓴다 — 단일 백업만 유지).
 
+    보안 정책:
+        ``output_path`` 또는 백업 대상 경로가 **심볼릭 링크**라면
+        :class:`UnsafeOutputPathError` 를 던지고 어떤 쓰기도 수행하지 않는다.
+        심볼릭 링크를 따라가면 ``/etc/passwd`` 같은 외부 파일이 백업으로
+        복제되거나 덮어쓰일 수 있는 데이터 유출/임의 변조 경로가 열린다.
+        백업은 :func:`os.replace` 로 수행해 원본 파일(또는 링크 메타데이터)을
+        원자적으로 백업 경로로 이동하므로 link follow 가 발생하지 않는다.
+        이후 :func:`os.open` 에 ``O_NOFOLLOW`` 플래그로 새 파일을 만들어 본문을
+        쓰므로 출력 경로 작성 단계에서도 link follow 가 차단된다.
+
     Args:
         markdown: 저장할 본문.
         output_path: 저장 경로(절대 권장).
@@ -76,16 +107,59 @@ def write_snapshot_file(
 
     Returns:
         :class:`WriteResult`.
+
+    Raises:
+        UnsafeOutputPathError: ``output_path`` 또는 백업 대상이 심볼릭 링크일 때.
     """
+    # 1) 출력 경로 자체가 심볼릭 링크면 거부. ``Path.exists()`` 는 링크가
+    #    가리키는 대상의 존재 여부이므로, 링크 검사는 ``is_symlink`` 가 정확.
+    if _is_symlink(output_path):
+        raise UnsafeOutputPathError(
+            f"refusing to write through a symlink: {output_path}"
+        )
+
     backup_path: Optional[Path] = None
-    if output_path.exists():
+    # ``Path.exists()`` 는 링크 follow 후 결과지만 위에서 링크면 이미 거부했고,
+    # ``lexists`` 와 동등한 효과를 위해 ``os.path.lexists`` 를 사용한다.
+    if os.path.lexists(str(output_path)):
         backup_path = output_path.with_name(output_path.name + backup_suffix)
-        # 기존 백업이 있으면 덮어쓴다(단일 백업 유지). 디렉토리/심볼릭 등 예외적
-        # 케이스는 그대로 OSError 가 전파되도록 둔다 — 사용자에게 메시지로 노출 가능.
-        shutil.copy2(str(output_path), str(backup_path))
+        # 백업 대상도 심볼릭 링크면 거부(외부 임의 파일을 덮어쓸 가능성).
+        if _is_symlink(backup_path):
+            raise UnsafeOutputPathError(
+                f"refusing to overwrite backup symlink: {backup_path}"
+            )
+        # ``shutil.copy2`` 는 source 의 링크를 follow 하므로 사용하지 않는다.
+        # ``os.replace`` 는 원본 파일을 (혹은 링크 자체를) 그대로 백업 경로로
+        # 이동시키므로 데이터 유출 경로가 닫힌다. 또한 원자적이다.
+        os.replace(str(output_path), str(backup_path))
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(markdown, encoding="utf-8")
+    # ``Path.write_text`` 는 내부적으로 ``open`` 을 사용하며 결과적으로 링크를
+    # follow 한다. 위 검사에서 링크는 거부했지만 TOCTOU 회피를 위해 ``O_NOFOLLOW``
+    # 플래그를 명시한다. ``O_EXCL`` 까지 결합하면 백업 직후 race 로 새로 생긴
+    # 링크/파일도 만들지 못해 보다 안전하다.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+    if hasattr(os, "O_EXCL") and backup_path is not None:
+        # 백업으로 옮겼으니 출력 경로는 비어 있어야 하며, 새로 만들어진다.
+        flags |= os.O_EXCL
+    try:
+        fd = os.open(str(output_path), flags, 0o644)
+    except OSError as exc:
+        # ``O_NOFOLLOW`` 가 링크를 만났을 때 ``ELOOP`` 또는 플랫폼 별 에러로
+        # 떨어진다. 사용자에게 보안 의도를 명확히 전달.
+        raise UnsafeOutputPathError(
+            f"refusing to write through a symlink (race or stale): {output_path}"
+        ) from exc
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(markdown)
+    except Exception:
+        # fdopen 실패 시 fd 누수 방지(정상 경로에서는 with 가 close).
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
     return WriteResult(output_path=output_path, backup_path=backup_path)
 
 
@@ -184,6 +258,7 @@ __all__ = [
     "DEFAULT_OUTPUT_FILENAME",
     "InitCommand",
     "ProjectSummarizer",
+    "UnsafeOutputPathError",
     "WriteResult",
     "write_snapshot_file",
 ]

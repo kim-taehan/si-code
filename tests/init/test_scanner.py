@@ -58,7 +58,10 @@ def _find_file(node: DirectoryEntry, rel_path: str) -> "FileEntry | None":
 
 class TestScannerDepthLimit:
     def test_excludes_files_beyond_max_depth(self, tmp_path: Path) -> None:
-        # 5단계 깊이 트리: tmp_path/d1/d2/d3/d4/d5/leaf.txt (루트=0, leaf=6)
+        # 트리: tmp_path(=루트, depth=0)/d1/d2/d3/d4/d5/d6/leaf.txt
+        # ``range(1, 7)`` 으로 d1..d6 까지 6단계가 만들어진다(d6.depth=6).
+        # leaf.txt 는 d6 안에 있으므로 depth=7. (이전 주석에 "leaf=6" 으로 적혀
+        # 있었으나 잘못된 계산이었다 — 정확히는 depth=7 이다.)
         deep = tmp_path
         for i in range(1, 7):
             deep = deep / f"d{i}"
@@ -66,7 +69,8 @@ class TestScannerDepthLimit:
         leaf = deep / "leaf.txt"
         leaf.write_text("hello", encoding="utf-8")
 
-        # max_depth=4 이면 d4 까지 노출, d5 이후는 truncated 로 표시되거나 미포함.
+        # max_depth=4 이면 d4(depth=4) 까지 노출, d5(depth=5) 는 truncated sentinel
+        # 로만 등장하고 d6/leaf.txt(depth>=6) 은 트리에 일절 포함되지 않는다.
         snap = scan_project(tmp_path, max_depth=4)
         all_paths = _all_paths(snap.tree)
         # leaf 의 전체 경로는 절대 포함되어선 안 된다(깊이 6이라 4단계 초과).
@@ -130,6 +134,40 @@ class TestScannerIgnorePatterns:
         snap = scan_project(tmp_path)
         for meta in snap.metadata_files:
             assert ".env" not in meta.path
+
+    def test_skips_extended_secret_patterns(self, tmp_path: Path) -> None:
+        """리뷰 라운드 2: ``*.key`` / ``*.pfx`` / ``id_dsa`` / ``id_ed25519`` /
+        ``credentials*`` / ``secrets.*`` / ``*.netrc`` / ``.npmrc`` / ``.pypirc``
+        / ``id_rsa_legacy`` (와일드카드 변형) 까지 제외되는지 보강 검증.
+        """
+        names_to_create = [
+            "client.key",
+            "store.pfx",
+            "android.jks",
+            "java.keystore",
+            "id_dsa",
+            "id_ecdsa",
+            "id_ed25519",
+            "id_rsa_legacy",  # 와일드카드 변형: id_rsa* 로 잡혀야 함
+            "credentials",
+            "credentials.json",
+            "secrets.yaml",
+            "secret.toml",
+            ".npmrc",
+            ".pypirc",
+            ".netrc",
+            "my.netrc",
+        ]
+        for name in names_to_create:
+            (tmp_path / name).write_text("S", encoding="utf-8")
+        # 정상 파일도 하나 두어 스캐너 자체는 동작해야 함을 확인.
+        (tmp_path / "main.py").write_text("print('hi')", encoding="utf-8")
+
+        snap = scan_project(tmp_path)
+        present = {p.split("/")[-1] for p in _all_paths(snap.tree)}
+        for forbidden in names_to_create:
+            assert forbidden not in present, f"{forbidden} 이(가) 노출됨"
+        assert "main.py" in present
 
 
 class TestScannerOversize:

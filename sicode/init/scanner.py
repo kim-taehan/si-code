@@ -54,17 +54,30 @@ DEFAULT_IGNORE_PATTERNS: Tuple[str, ...] = (
     "dist",
     "build",
     "*.egg-info",
+    # 환경/시크릿 (보수적 디폴트). 이름 패턴은 ``fnmatch`` 스타일이며 디렉토리·
+    # 파일 양쪽에 적용된다. 정확한 이름 외에 ``*`` 와일드카드로 변형까지 차단.
     ".env",
     ".env.*",
     "*.pem",
     "*.key",
-    "id_rsa",
-    "id_rsa.*",
-    "id_dsa",
-    "id_ecdsa",
-    "id_ed25519",
     "*.crt",
     "*.p12",
+    "*.pfx",
+    "*.jks",
+    "*.keystore",
+    "id_rsa*",  # id_rsa, id_rsa.pub, id_rsa_legacy 등 모든 변형
+    "id_dsa*",
+    "id_ecdsa*",
+    "id_ed25519*",
+    "secrets.*",
+    "secret.*",
+    "credentials*",
+    "*.netrc",
+    ".netrc",
+    ".npmrc",
+    ".pypirc",
+    "*.aws",
+    ".aws",
     ".DS_Store",
 )
 
@@ -252,6 +265,9 @@ def scan_project(
     Args:
         root: 스캔 루트. ``None`` 이면 :func:`Path.cwd` 사용.
         max_depth: 루트(0) 기준 최대 깊이. ``4`` 면 루트의 4단계 자식까지 내려간다.
+            한도 + 1 깊이의 디렉토리는 노드 자체는 트리에 등장하지만 자식 없이
+            ``truncated=True`` sentinel 로만 노출되어 "여기서 잘렸음" 을 표시한다.
+            한도 + 2 이상 깊이의 노드는 일절 트리에 포함되지 않는다.
         max_file_bytes: 본문 수집 임계 크기. 초과 파일은 메타데이터만 기록한다.
         ignore_patterns: 무시할 이름 패턴(``fnmatch``). 디렉토리·파일 모두에 적용.
         metadata_patterns: 본문을 읽어 요약 섹션에 포함할 파일 이름 패턴.

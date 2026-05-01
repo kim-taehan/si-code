@@ -330,3 +330,88 @@ class TestInitCommandIntegration:
         joined = "\n".join(outputs)
         assert "Saved project snapshot to:" in joined
         assert (tmp_path / "SICODE.md").exists()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="symlink 정책 테스트는 POSIX 환경 가정. Windows 는 권한 모델이 다르다.",
+)
+class TestInitCommandSymlinkSafetyIntegration:
+    """``InitCommand.execute`` end-to-end 보안 회귀 테스트 (라운드 3).
+
+    리뷰 라운드 2 [Critical]:
+        ``InitCommand.execute`` 가 ``output_path = (root / filename).resolve()`` 로
+        심볼릭 링크를 미리 풀어 writer 에 넘기던 시기가 있었다. 그 결과
+        ``write_snapshot_file`` 의 ``is_symlink`` 단위 보안은 통과해도,
+        실제 통합 호출 경로에서는 외부 파일이 백업/덮어쓰기 당하는 데이터
+        유출/임의 변조 결함이 재현됐다. 본 테스트는 이 통합 경로 회귀를 막는다.
+    """
+
+    def test_execute_refuses_when_sicode_md_is_symlink_to_external_file(
+        self, tmp_path: Path
+    ) -> None:
+        # 외부 디렉토리에 "민감" 파일.
+        external_dir = tmp_path / "external_dir"
+        external_dir.mkdir()
+        external = external_dir / "external_secret.txt"
+        external.write_text("SECRET CONTENT", encoding="utf-8")
+
+        # cwd 는 별도 디렉토리. 그 안의 SICODE.md 가 외부 파일을 가리키는 symlink.
+        cwd = tmp_path / "cwd"
+        cwd.mkdir()
+        target = cwd / "SICODE.md"
+        os.symlink(str(external), str(target))
+        assert target.is_symlink()
+
+        cmd = InitCommand(cwd_fn=lambda: cwd)
+
+        # InitCommand 가 resolve() 로 심볼릭을 풀면 writer 의 검사가 우회되어
+        # CommandResult 가 정상 반환되는 결함이 있었다. 이제는 반드시 거부.
+        with pytest.raises(UnsafeOutputPathError):
+            cmd.execute(ReplContext())
+
+        # 가장 중요한 사후 조건: 외부 파일은 어떤 식으로도 변조되거나 백업되지 않음.
+        assert external.read_text(encoding="utf-8") == "SECRET CONTENT"
+        # 외부 디렉토리에 백업 파일이 생성되어선 절대 안 된다(데이터 유출 경로 차단).
+        assert not (external_dir / "external_secret.txt.bak").exists()
+        # cwd 디렉토리에도 SICODE.md.bak 가 생기면 안 된다.
+        assert not (cwd / "SICODE.md.bak").exists()
+        # 심볼릭 링크 자체는 우리가 손대지 않으므로 그대로 유지.
+        assert target.is_symlink()
+
+    def test_execute_refuses_when_sicode_md_is_broken_symlink(
+        self, tmp_path: Path
+    ) -> None:
+        # 깨진 심볼릭 링크여도 InitCommand 통합 경로에서 거부되어야 한다.
+        cwd = tmp_path / "cwd"
+        cwd.mkdir()
+        target = cwd / "SICODE.md"
+        os.symlink(str(tmp_path / "does_not_exist"), str(target))
+
+        cmd = InitCommand(cwd_fn=lambda: cwd)
+        with pytest.raises(UnsafeOutputPathError):
+            cmd.execute(ReplContext())
+
+        # 백업 / 실제 파일 어느 쪽도 만들어져선 안 됨.
+        assert not (cwd / "SICODE.md.bak").exists()
+        # 링크 자체는 그대로.
+        assert target.is_symlink()
+
+    def test_execute_normal_when_cwd_parent_is_symlink_dir(
+        self, tmp_path: Path
+    ) -> None:
+        # cwd 부모 디렉토리가 심볼릭 링크여도 (e.g. macOS 의 /tmp -> /private/tmp)
+        # leaf SICODE.md 가 실제 파일이라면 정상 동작해야 한다.
+        # ``Path.absolute()`` 는 심볼릭을 풀지 않으므로 leaf 만 체크된다.
+        real_dir = tmp_path / "real"
+        real_dir.mkdir()
+        link_dir = tmp_path / "link"
+        os.symlink(str(real_dir), str(link_dir))
+
+        # symlink 디렉토리를 cwd 로 사용.
+        cmd = InitCommand(cwd_fn=lambda: link_dir)
+        result = cmd.execute(ReplContext())
+        # 정상 완료. 실제 파일이 link_dir(혹은 real_dir) 안에 생긴다.
+        assert "Saved project snapshot to:" in result.output
+        assert (link_dir / "SICODE.md").exists()
+        assert (real_dir / "SICODE.md").exists()

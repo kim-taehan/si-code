@@ -71,12 +71,43 @@ def _is_symlink(path: Path) -> bool:
     """``Path.is_symlink`` 의 ``OSError`` 안전 래퍼.
 
     ``lstat`` 호출이 권한 등으로 실패한 경우 보수적으로 ``True`` (심볼릭 가능성)
-    로 간주해 호출자가 거부하도록 만든다.
+    로 간주해 호출자가 거부하도록 만든다. 정상 디렉토리에서도 권한 문제로
+    실패할 수 있으므로, 호출자는 거부 시 사용자에게 "권한 또는 lstat 실패"
+    가능성을 함께 안내해야 한다.
     """
     try:
         return path.is_symlink()
     except OSError:
         return True
+
+
+def _validate_output_path(
+    output_path: Path,
+    backup_path: Optional[Path],
+) -> None:
+    """``write_snapshot_file`` 의 보안 정책 검사.
+
+    ``output_path`` 자체 또는 백업 대상 경로가 심볼릭 링크면
+    :class:`UnsafeOutputPathError` 를 던진다. 정책을 함수로 분리해 향후
+    "디렉토리 경계 검사" 등 새 정책 추가 시 본 함수만 확장하면 되도록 한다(OCP).
+
+    호출자(``InitCommand``)는 ``Path.absolute()`` (resolve 가 아님)로 만든
+    경로를 넘겨야 한다. ``resolve()`` 는 심볼릭 링크를 따라가 본 검사를 무력화
+    하므로(라운드 3 회귀), 호출 측에서 보장해야 한다.
+    """
+    if _is_symlink(output_path):
+        raise UnsafeOutputPathError(
+            f"refusing to write through a symlink "
+            f"(or lstat denied): {output_path}"
+        )
+    # 백업 경로는 호출자가 "기존 파일이 존재할 때만" 결정한다. 존재할 때만
+    # 심볼릭 검사. ``os.path.lexists`` 로 명시적으로 묶어 의도를 가시화한다.
+    if backup_path is not None and os.path.lexists(str(backup_path)):
+        if _is_symlink(backup_path):
+            raise UnsafeOutputPathError(
+                f"refusing to overwrite backup symlink "
+                f"(or lstat denied): {backup_path}"
+            )
 
 
 def write_snapshot_file(
@@ -90,7 +121,7 @@ def write_snapshot_file(
     백업은 ``output_path`` 와 같은 디렉토리에서 같은 파일명에 ``backup_suffix`` 를
     덧붙인 경로로 생성된다(기존 백업이 있으면 덮어쓴다 — 단일 백업만 유지).
 
-    보안 정책:
+    보안 정책 (자세한 것은 :func:`_validate_output_path` 참조):
         ``output_path`` 또는 백업 대상 경로가 **심볼릭 링크**라면
         :class:`UnsafeOutputPathError` 를 던지고 어떤 쓰기도 수행하지 않는다.
         심볼릭 링크를 따라가면 ``/etc/passwd`` 같은 외부 파일이 백업으로
@@ -100,9 +131,20 @@ def write_snapshot_file(
         이후 :func:`os.open` 에 ``O_NOFOLLOW`` 플래그로 새 파일을 만들어 본문을
         쓰므로 출력 경로 작성 단계에서도 link follow 가 차단된다.
 
+    호출자 계약 (Critical):
+        호출자는 **반드시 ``Path.absolute()`` (또는 동등한 비-resolve 경로)** 를
+        넘겨야 한다. ``Path.resolve()`` / ``os.path.realpath`` 는 심볼릭 링크를
+        선제적으로 따라가므로 본 함수의 ``is_symlink`` 검사가 무력화된다
+        (라운드 3 회귀). ``InitCommand.execute`` 가 이 계약을 지킨다.
+
+    플랫폼:
+        ``O_NOFOLLOW`` 는 Linux/macOS 에서 leaf 심볼릭을 거부한다. 일부 NFS /
+        특수 파일시스템에서는 무시될 수 있어 단독 방어선으로 신뢰하지 말고,
+        반드시 위 ``_validate_output_path`` 의 사전 검사와 결합한다.
+
     Args:
         markdown: 저장할 본문.
-        output_path: 저장 경로(절대 권장).
+        output_path: 저장 경로(절대 권장, ``absolute()`` 결과 권장).
         backup_suffix: 백업 파일에 덧붙일 접미사. 기본값 ``".bak"``.
 
     Returns:
@@ -111,23 +153,15 @@ def write_snapshot_file(
     Raises:
         UnsafeOutputPathError: ``output_path`` 또는 백업 대상이 심볼릭 링크일 때.
     """
-    # 1) 출력 경로 자체가 심볼릭 링크면 거부. ``Path.exists()`` 는 링크가
-    #    가리키는 대상의 존재 여부이므로, 링크 검사는 ``is_symlink`` 가 정확.
-    if _is_symlink(output_path):
-        raise UnsafeOutputPathError(
-            f"refusing to write through a symlink: {output_path}"
-        )
-
+    # 1) 출력 경로 자체의 심볼릭 검사를 먼저 수행. 백업 경로는 출력이 이미 존재
+    #    할 때만 의미가 있으므로, ``lexists`` 분기 안에서 함께 검증한다.
     backup_path: Optional[Path] = None
-    # ``Path.exists()`` 는 링크 follow 후 결과지만 위에서 링크면 이미 거부했고,
-    # ``lexists`` 와 동등한 효과를 위해 ``os.path.lexists`` 를 사용한다.
     if os.path.lexists(str(output_path)):
         backup_path = output_path.with_name(output_path.name + backup_suffix)
-        # 백업 대상도 심볼릭 링크면 거부(외부 임의 파일을 덮어쓸 가능성).
-        if _is_symlink(backup_path):
-            raise UnsafeOutputPathError(
-                f"refusing to overwrite backup symlink: {backup_path}"
-            )
+
+    _validate_output_path(output_path, backup_path)
+
+    if backup_path is not None:
         # ``shutil.copy2`` 는 source 의 링크를 follow 하므로 사용하지 않는다.
         # ``os.replace`` 는 원본 파일을 (혹은 링크 자체를) 그대로 백업 경로로
         # 이동시키므로 데이터 유출 경로가 닫힌다. 또한 원자적이다.
@@ -216,7 +250,13 @@ class InitCommand(SlashCommand):
         self._output_filename = output_filename
 
     def execute(self, context: ReplContext) -> CommandResult:  # noqa: ARG002 - 컨텍스트 미사용
-        root = self._cwd_fn().resolve()
+        # 보안 주의(리뷰 라운드 3): ``Path.resolve()`` 는 심볼릭 링크를 따라가
+        # 타겟의 실제 경로를 반환한다. 그 결과 SICODE.md 자리에 외부 파일을
+        # 가리키는 심볼릭 링크가 있으면, writer 가 받은 경로는 외부 파일의
+        # 실제 경로가 되어 ``write_snapshot_file`` 의 ``is_symlink`` 검사가
+        # 무력화된다(타겟은 일반 파일이므로 통과). 따라서 cwd / output 모두
+        # ``Path.absolute()`` 로 심볼릭을 풀지 않은 절대 경로만 만든다.
+        root = self._cwd_fn().absolute()
         snapshot = self._scanner(root)
 
         llm_summary: Optional[str] = None
@@ -224,7 +264,7 @@ class InitCommand(SlashCommand):
             llm_summary = self._safely_summarize(snapshot)
 
         markdown = self._renderer(snapshot, llm_summary)
-        output_path = (root / self._output_filename).resolve()
+        output_path = (root / self._output_filename).absolute()
         result = self._writer(markdown, output_path)
 
         lines: list[str] = []

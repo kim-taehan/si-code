@@ -76,7 +76,8 @@ DEFAULT_IGNORE_PATTERNS: Tuple[str, ...] = (
     ".netrc",
     ".npmrc",
     ".pypirc",
-    "*.aws",
+    # AWS 자격증명은 디렉토리 ``~/.aws/`` 안에 위치하므로 ``.aws`` 패턴이면 충분.
+    # ``*.aws`` 는 가공의 ``foo.aws`` 같은 노이즈만 잡으므로 제거(리뷰 라운드 3 정정).
     ".aws",
     ".DS_Store",
 )

@@ -318,7 +318,8 @@ class TestModuleConstants:
         assert DEFAULT_HOST == "http://localhost:11434"
 
     def test_default_model(self) -> None:
-        assert DEFAULT_MODEL == "llama3"
+        # 이슈 #5: 사용자 로컬 환경에 실재하는 모델로 기본값 변경.
+        assert DEFAULT_MODEL == "llama3.1:8b"
 
     def test_default_timeout_is_30_seconds(self) -> None:
         assert DEFAULT_TIMEOUT_SECONDS == 30.0

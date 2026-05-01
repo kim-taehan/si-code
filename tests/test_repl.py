@@ -11,7 +11,6 @@ from typing import Iterator, List
 import pytest
 
 from sicode.modes.base import BaseMode
-from sicode.modes.simple import SimpleMode
 from sicode.repl import (
     DEFAULT_PROMPT,
     build_welcome_message,
@@ -19,6 +18,7 @@ from sicode.repl import (
     run_repl,
     run_repl_with_inputs,
 )
+from tests.conftest import EchoMode
 
 
 class _RecordingMode(BaseMode):
@@ -54,14 +54,20 @@ class TestExitCommandHelper:
 
 class TestWelcomeMessage:
     def test_contains_version_and_mode_name(self) -> None:
-        msg = build_welcome_message(SimpleMode(), version="9.9.9")
+        msg = build_welcome_message(EchoMode(), version="9.9.9")
         assert "9.9.9" in msg
-        assert "simple" in msg
+        assert "echo" in msg
+
+    def test_contains_ollama_server_notice(self) -> None:
+        # 이슈 #5 수용 기준: 환영 메시지에 Ollama 서버 필요 안내가 포함되어야 한다.
+        msg = build_welcome_message(EchoMode(), version="9.9.9")
+        assert "Ollama" in msg
+        assert "실행" in msg
 
 
 class TestRunRepl:
     def test_echoes_user_input(self) -> None:
-        outputs = run_repl_with_inputs(SimpleMode(), ["hello world"])
+        outputs = run_repl_with_inputs(EchoMode(), ["hello world"])
         # outputs[0] 은 환영 메시지. 그 이후에 에코된 라인이 있어야 한다.
         assert "hello world" in outputs
 
@@ -86,7 +92,7 @@ class TestRunRepl:
 
     def test_handles_eof_gracefully(self) -> None:
         # run_repl_with_inputs 는 입력이 소진되면 EOFError 로 위임한다.
-        outputs = run_repl_with_inputs(SimpleMode(), [])
+        outputs = run_repl_with_inputs(EchoMode(), [])
         assert any("Goodbye" in line for line in outputs)
 
     def test_handles_keyboard_interrupt_gracefully(self) -> None:
@@ -96,7 +102,7 @@ class TestRunRepl:
             raise KeyboardInterrupt
 
         exit_code = run_repl(
-            SimpleMode(),
+            EchoMode(),
             input_fn=_input_fn,
             output_fn=captured.append,
         )
@@ -108,7 +114,7 @@ class TestRunRepl:
         inputs = iter(["hello", "exit"])
 
         exit_code = run_repl(
-            SimpleMode(),
+            EchoMode(),
             input_fn=_make_input_fn(inputs),
             output_fn=captured.append,
         )
@@ -123,7 +129,7 @@ class TestRunRepl:
             return next(inputs)
 
         run_repl(
-            SimpleMode(),
+            EchoMode(),
             prompt=">> ",
             input_fn=_input_fn,
             output_fn=lambda _line: None,

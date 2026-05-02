@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:  # pragma: no cover - 타입 힌트 전용 임포트(런타임 순환 참조 회피)
     from sicode.commands.registry import SlashCommandRegistry
+    from sicode.modes.base import BaseMode
 
 
 class CommandAction(Enum):
@@ -56,14 +57,22 @@ class ReplContext:
     """슬래시 명령에 노출되는 REPL 컨텍스트.
 
     명령이 필요로 하는 최소 정보만 노출해 결합도를 낮춘다 (ISP).
-    현재는 ``/help`` 가 등록 명령 목록을 조회하는 용도로만 사용한다.
+    ``/help`` 는 ``registry`` 를 사용해 등록 명령 목록을 조회하고, ``/clear`` /
+    ``/system`` 은 ``mode`` 를 사용해 대화 상태를 조작한다.
 
     Attributes:
         registry: 슬래시 명령 레지스트리. ``None`` 이면 명령은 레지스트리 정보를
             사용하지 않는다고 가정한다.
+        mode: 현재 활성화된 모드. 명령은 필요할 때만 사용하며, ``None`` 이면
+            모드 의존 명령은 안내 문구로 폴백한다 (ISP — 명령마다 필요한 정보
+            만 골라 쓴다).
+        argument: ``/system <텍스트>`` 처럼 슬래시 토큰 뒤에 오는 자유 인자 부분.
+            앞뒤 공백을 제거한 문자열이며, 인자가 없으면 빈 문자열이다.
     """
 
     registry: Optional["SlashCommandRegistry"] = None
+    mode: Optional["BaseMode"] = None
+    argument: str = ""
 
 
 class SlashCommand(ABC):

@@ -14,21 +14,39 @@ from typing import Callable, Optional, Sequence
 
 from sicode.commands import default_registry, register_default_commands
 from sicode.modes.base import BaseMode
+from sicode.modes.conversation import DEFAULT_MAX_TURNS
 from sicode.modes.ollama import (
     DEFAULT_HOST,
     DEFAULT_MODEL,
-    OllamaClient,
     OllamaMode,
 )
+from sicode.modes.ollama_chat import OllamaChatClient
 from sicode.repl import run_repl
 
 
 #: 환경 변수 이름들. 한 곳에 모아두어 테스트와 도큐먼트가 일관되게 참조한다.
 ENV_OLLAMA_HOST: str = "SICODE_OLLAMA_HOST"
 ENV_OLLAMA_MODEL: str = "SICODE_OLLAMA_MODEL"
+ENV_OLLAMA_MAX_TURNS: str = "SICODE_OLLAMA_MAX_TURNS"
 
 #: ``--mode`` 의 기본값. 새 모드가 늘어나도 한 곳만 바꾸면 된다.
 DEFAULT_MODE_NAME: str = "ollama"
+
+
+def _resolve_max_turns() -> int:
+    """``SICODE_OLLAMA_MAX_TURNS`` 환경 변수에서 최대 턴 수를 읽는다.
+
+    값이 없거나 정수로 해석할 수 없거나 1 미만이면 :data:`DEFAULT_MAX_TURNS`
+    로 폴백한다(잘못된 환경 변수가 프로세스 기동을 막지 않게).
+    """
+    raw = os.environ.get(ENV_OLLAMA_MAX_TURNS)
+    if raw is None:
+        return DEFAULT_MAX_TURNS
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_MAX_TURNS
+    return value if value >= 1 else DEFAULT_MAX_TURNS
 
 
 def _build_ollama_mode(args: argparse.Namespace) -> BaseMode:
@@ -36,11 +54,16 @@ def _build_ollama_mode(args: argparse.Namespace) -> BaseMode:
 
     호스트 URL 은 보안상 환경 변수(:data:`ENV_OLLAMA_HOST`) 로만 변경 가능하며 CLI 에서
     임의 URL 을 직접 지정할 수 없다. 모델 이름은 CLI > 환경 변수 > 기본값 순으로 적용된다.
+
+    이슈 #11 부터는 멀티턴 대화 지원을 위해 ``OllamaChatClient`` (``/api/chat``)
+    를 기본 클라이언트로 구성하고, ``OllamaMode`` 가 :class:`Conversation` 을
+    내부에 보유하도록 한다. ``OllamaClient`` (``/api/generate``) 는 호환성 유지
+    용도로 모듈에 그대로 남아 있다.
     """
     host = os.environ.get(ENV_OLLAMA_HOST, DEFAULT_HOST)
     model = args.model or os.environ.get(ENV_OLLAMA_MODEL, DEFAULT_MODEL)
-    client = OllamaClient(host=host, model=model)
-    return OllamaMode(client=client)
+    client = OllamaChatClient(host=host, model=model)
+    return OllamaMode(client=client, max_turns=_resolve_max_turns())
 
 
 #: 모드 이름 -> 모드 팩토리 매핑. 새 모드를 추가할 때 이 딕셔너리에 한 줄만 더하면 된다 (OCP).

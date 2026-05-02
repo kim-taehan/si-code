@@ -16,11 +16,15 @@ from __future__ import annotations
 
 import json
 import socket
-from typing import Callable, Optional, Protocol
+from typing import TYPE_CHECKING, Callable, Optional, Protocol, Union
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
 from sicode.modes.base import BaseMode
+from sicode.modes.conversation import Conversation, DEFAULT_MAX_TURNS
+
+if TYPE_CHECKING:  # pragma: no cover - 타입 힌트 전용 (런타임 순환 회피)
+    from sicode.modes.ollama_chat import OllamaChatClient
 
 
 #: 기본 Ollama 호스트. ``SICODE_OLLAMA_HOST`` 로 덮어쓸 수 있다.
@@ -208,26 +212,89 @@ class OllamaMode(BaseMode):
 
     - REPL 코드는 :class:`BaseMode` 추상에만 의존하므로 본 모드 추가로 인한 REPL
       변경은 없다 (OCP).
-    - HTTP 호출은 :class:`OllamaClientProtocol` 추상으로 위임한다 (DIP).
+    - HTTP 호출은 :class:`OllamaClientProtocol` 또는 chat 클라이언트(``chat`` 메서드를
+      갖는 객체) 추상으로 위임한다 (DIP).
+
+    동작 모드:
+        본 클래스는 두 가지 클라이언트를 모두 지원한다.
+
+        1. **Single-turn (legacy)**: ``client`` 가 ``Callable[[str], str]`` 처럼
+           ``__call__(prompt)`` 만 가진 객체일 때. 호출마다 독립적으로 프롬프트를
+           보내며 대화 히스토리를 사용하지 않는다 (기존 동작 유지).
+        2. **Multi-turn (chat)**: ``client`` 가 ``chat(conversation)`` 메서드를
+           갖는 객체(예: :class:`OllamaChatClient`) 일 때. 내부 :class:`Conversation`
+           에 사용자/어시스턴트 메시지를 누적해 매 호출마다 함께 전송한다.
+
+        멀티턴 활성화는 단순 duck-typing 으로 판정한다 (``hasattr(client, "chat")``).
+        이렇게 분기하는 이유는 LSP 위배 없이 두 다른 클라이언트 형태를 한 모드 안에서
+        매끄럽게 지원하면서도, 각 클라이언트가 본인의 단일 책임만을 갖도록 유지하기 위함.
     """
 
     name = "ollama"
 
-    def __init__(self, client: OllamaClientProtocol) -> None:
+    def __init__(
+        self,
+        client: Union[OllamaClientProtocol, "OllamaChatClient"],
+        *,
+        conversation: Optional[Conversation] = None,
+        max_turns: int = DEFAULT_MAX_TURNS,
+    ) -> None:
         """모드를 초기화한다.
 
         Args:
-            client: 프롬프트를 받아 응답 텍스트를 반환하는 콜러블/객체.
+            client: 단일 프롬프트 콜러블(``__call__(prompt) -> str``) 또는 ``chat``
+                메서드를 가진 멀티턴 클라이언트(``chat(conversation) -> str``).
+            conversation: 멀티턴 모드에서 사용할 :class:`Conversation` 인스턴스.
+                ``None`` 이면 ``max_turns`` 로 새 인스턴스를 생성한다. single-turn
+                클라이언트와 함께 쓰면 본 인스턴스는 사용되지 않는다.
+            max_turns: ``conversation`` 미지정 시 새 :class:`Conversation` 의
+                최대 턴 수.
         """
         self._client = client
+        self._conversation = conversation or Conversation(max_turns=max_turns)
+        self._is_chat_client = hasattr(client, "chat")
+
+    @property
+    def conversation(self) -> Conversation:
+        """대화 히스토리 핸들. ``/clear`` / ``/system`` 슬래시 명령이 사용한다."""
+        return self._conversation
+
+    @property
+    def supports_multi_turn(self) -> bool:
+        """현재 클라이언트가 멀티턴(chat) 모드를 지원하는지 여부."""
+        return self._is_chat_client
 
     def handle(self, user_input: str) -> str:
         """사용자 입력을 Ollama 로 보내고 응답을 반환한다.
 
         오류 시 REPL 을 종료시키지 않기 위해 :class:`OllamaError` 를 잡아 사용자에게
-        보여줄 메시지로 변환한다.
+        보여줄 메시지로 변환한다. 멀티턴 모드에서는 사용자 메시지를 :class:`Conversation`
+        에 추가 → 클라이언트 호출 → 어시스턴트 응답을 히스토리에 저장하는 흐름으로
+        동작한다. 클라이언트 호출이 실패하면 사용자 메시지가 히스토리에 누적되지
+        않도록 롤백한다(같은 입력으로 재시도하기 쉬워진다).
         """
+        if self._is_chat_client:
+            return self._handle_chat(user_input)
+        return self._handle_legacy(user_input)
+
+    # ------------------------------------------------------------------ helpers
+
+    def _handle_legacy(self, user_input: str) -> str:
+        """단일 프롬프트 호출(호환 경로). 히스토리를 사용하지 않는다."""
         try:
-            return self._client(user_input)
+            return self._client(user_input)  # type: ignore[operator]
         except OllamaError as exc:
             return f"[ollama] {exc}"
+
+    def _handle_chat(self, user_input: str) -> str:
+        """멀티턴 chat 호출. 성공 시 어시스턴트 응답을 히스토리에 저장한다."""
+        self._conversation.add_user(user_input)
+        try:
+            reply = self._client.chat(self._conversation)  # type: ignore[union-attr]
+        except OllamaError as exc:
+            # 클라이언트 호출 실패 시 pending user 메시지를 폐기해 다음 호출에
+            # 누적되지 않도록 한다(같은 입력으로 재시도 시 중복 누적 방지).
+            self._conversation.discard_pending_user()
+            return f"[ollama] {exc}"
+        self._conversation.add_assistant(reply)
+        return reply

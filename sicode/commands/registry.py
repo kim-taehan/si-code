@@ -15,7 +15,7 @@ SOLID 메모:
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Dict, Iterator, List, Optional
+from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Tuple
 
 from sicode.commands.base import (
     CommandAction,
@@ -23,6 +23,9 @@ from sicode.commands.base import (
     ReplContext,
     SlashCommand,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - 타입 힌트 전용
+    from sicode.modes.base import BaseMode
 
 
 class SlashCommandRegistry:
@@ -141,18 +144,40 @@ def parse_slash_input(line: str) -> Optional[str]:
     """입력 문자열을 슬래시 명령 토큰으로 변환한다.
 
     슬래시(``/``) 로 시작하지 않으면 ``None`` 을 반환한다. 토큰은 슬래시를 제거하고
-    앞뒤 공백을 제거한 후 소문자로 정규화한다. (인자 파싱은 범위 외이므로 첫
-    공백까지만 토큰으로 인정한다.)
+    앞뒤 공백을 제거한 후 소문자로 정규화한다. 본 함수는 토큰만 반환하고 인자는
+    :func:`parse_slash_command` 가 함께 추출한다(둘은 동일 파서를 공유한다).
+    """
+    parsed = parse_slash_command(line)
+    if parsed is None:
+        return None
+    token, _ = parsed
+    return token
+
+
+def parse_slash_command(line: str) -> Optional[Tuple[str, str]]:
+    """슬래시 입력을 (토큰, 인자) 쌍으로 분해한다.
+
+    슬래시로 시작하지 않으면 ``None``. ``/`` 만 있으면 ``("", "")``.
+    토큰은 첫 공백까지의 부분을 소문자로 정규화하며, 인자는 토큰 뒤의 나머지
+    문자열에서 앞뒤 공백을 제거한 결과다(중간 공백은 그대로 보존).
+
+    예::
+
+        parse_slash_command("/system  Hello world  ") == ("system", "Hello world")
+        parse_slash_command("/clear")               == ("clear", "")
+        parse_slash_command("/")                    == ("", "")
+        parse_slash_command("hello")                == None
     """
     stripped = line.strip()
     if not stripped.startswith("/"):
         return None
     body = stripped[1:].strip()
     if not body:
-        return ""
-    # 첫 공백 이전까지를 토큰으로 사용 (인자 파싱은 향후 작업).
-    token = body.split(maxsplit=1)[0]
-    return token.lower()
+        return ("", "")
+    parts = body.split(maxsplit=1)
+    token = parts[0].lower()
+    argument = parts[1].strip() if len(parts) > 1 else ""
+    return (token, argument)
 
 
 def dispatch_command(
@@ -160,6 +185,7 @@ def dispatch_command(
     *,
     registry: Optional[SlashCommandRegistry] = None,
     context: Optional[ReplContext] = None,
+    mode: Optional["BaseMode"] = None,
 ) -> CommandResult:
     """슬래시 입력을 디스패치한다.
 
@@ -171,18 +197,22 @@ def dispatch_command(
         line: 사용자 입력 한 줄.
         registry: 사용할 레지스트리. ``None`` 이면 :data:`default_registry`.
         context: 명령에 전달할 :class:`ReplContext`. ``None`` 이면 본 함수가
-            레지스트리만 채워 생성한다.
+            ``registry`` / ``mode`` / ``argument`` 를 채워 생성한다.
+            명시적으로 ``context`` 를 넘기면 본 함수의 ``argument`` / ``mode`` /
+            ``registry`` 는 사용되지 않는다(호출자 책임).
+        mode: 명령에 노출할 현재 모드. ``context`` 미전달 시에만 의미 있다.
 
     Returns:
         :class:`CommandResult`.
     """
     reg = registry or default_registry
-    token = parse_slash_input(line)
-    if token is None:
+    parsed = parse_slash_command(line)
+    if parsed is None:
         # 호출자가 보장하지 않은 경우의 방어적 처리. 슬래시가 아니면
         # 그대로 CONTINUE 를 반환하며 출력은 비운다.
         return CommandResult(action=CommandAction.CONTINUE, output="")
 
+    token, argument = parsed
     if token == "":
         # ``/`` 만 입력된 경우 - help 안내로 폴백한다.
         return CommandResult(
@@ -197,7 +227,7 @@ def dispatch_command(
             output=f"Unknown command: /{token}. Type /help for available commands.",
         )
 
-    ctx = context or ReplContext(registry=reg)
+    ctx = context or ReplContext(registry=reg, mode=mode, argument=argument)
     return command.execute(ctx)
 
 
@@ -205,6 +235,7 @@ __all__ = [
     "SlashCommandRegistry",
     "default_registry",
     "dispatch_command",
+    "parse_slash_command",
     "parse_slash_input",
     "register",
     "reset",

@@ -5,10 +5,16 @@
       "대화 히스토리를 초기화했습니다." 메시지를 출력한다.
     - REPL 루프(``repl.py``) 본문은 수정하지 않는다 (OCP).
 
+추가 동작(이슈 #17):
+    - 모드가 ``symbol_resolver`` 속성을 노출하고 그 객체에 ``invalidate``
+      메서드가 있으면 함께 호출해 ``@심볼 자동 확장`` 캐시를 초기화한다.
+      ISP/OCP — 심볼 기능을 사용하지 않는 모드는 본 분기를 그냥 건너뛴다.
+
 설계 메모:
     - DIP: 본 명령은 모드 구체 클래스 대신 ``conversation`` 속성(:class:`Conversation`)을
       가진 객체에만 의존한다. 단위 테스트는 가짜 모드(``DummyMode``) 를 주입한다.
-    - SRP: "히스토리 초기화 + 안내 출력" 한 가지 책임.
+    - SRP: "히스토리 초기화 + 심볼 캐시 초기화 + 안내 출력" — 모두 "사용자가
+      ``/clear`` 로 기대하는 완전 초기화" 한 가지 책임으로 묶인다.
     - 모드가 :class:`Conversation` 인터페이스를 노출하지 않는 경우(예: legacy
       single-turn 콜러블) 안전하게 안내 문구로 폴백한다.
 """
@@ -44,6 +50,28 @@ def _resolve_conversation(context: ReplContext) -> "Conversation | None":
     return None
 
 
+def _invalidate_symbol_cache(context: ReplContext) -> None:
+    """모드에 노출된 심볼 리졸버가 있으면 캐시를 비운다(이슈 #17).
+
+    구체 클래스에 의존하지 않고 ``invalidate`` 메서드 존재만 duck-typing 으로
+    확인한다. 호출 실패는 무시해 ``/clear`` 전체 흐름을 깨지 않는다.
+    """
+    mode = context.mode
+    if mode is None:
+        return
+    resolver = getattr(mode, "symbol_resolver", None)
+    if resolver is None:
+        return
+    invalidate = getattr(resolver, "invalidate", None)
+    if not callable(invalidate):
+        return
+    try:
+        invalidate()
+    except Exception:
+        # 캐시 무효화 실패는 사용자 흐름을 막지 않는다.
+        return
+
+
 class ClearCommand(SlashCommand):
     """대화 히스토리를 초기화하는 슬래시 명령."""
 
@@ -56,6 +84,7 @@ class ClearCommand(SlashCommand):
         if conversation is None:
             return CommandResult.cont(NO_CONVERSATION_MESSAGE)
         conversation.clear()
+        _invalidate_symbol_cache(context)
         return CommandResult.cont(SUCCESS_MESSAGE)
 
 

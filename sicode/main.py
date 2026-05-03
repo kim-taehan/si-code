@@ -32,6 +32,7 @@ from sicode.modes.ollama import (
 )
 from sicode.modes.ollama_chat import OllamaChatClient
 from sicode.repl import run_repl
+from sicode.symbols import SymbolExpander, SymbolResolver
 
 
 #: 환경 변수 이름들. 한 곳에 모아두어 테스트와 도큐먼트가 일관되게 참조한다.
@@ -117,10 +118,17 @@ def _build_ollama_mode(
     host = os.environ.get(ENV_OLLAMA_HOST, DEFAULT_HOST)
     model = _resolve_initial_model(args, registry)
     client = OllamaChatClient(host=host, model=model)
+    # 이슈 #17: ``@심볼 자동 확장`` 통합. resolver 와 expander 를 한 번 만들어
+    # OllamaMode 에 주입한다(같은 인스턴스를 공유해야 ``/clear`` 의
+    # ``invalidate()`` 가 다음 ``handle()`` 의 캐시 사용에 정확히 반영된다).
+    symbol_resolver = SymbolResolver()
+    symbol_expander = SymbolExpander(symbol_resolver)
     return OllamaMode(
         client=client,
         max_turns=_resolve_max_turns(),
         client_factory=_make_chat_client_factory(host),
+        input_preprocessor=symbol_expander.expand,
+        symbol_resolver=symbol_resolver,
     )
 
 

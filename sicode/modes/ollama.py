@@ -239,6 +239,8 @@ class OllamaMode(BaseMode):
         conversation: Optional[Conversation] = None,
         max_turns: int = DEFAULT_MAX_TURNS,
         client_factory: Optional[Callable[[str], "OllamaChatClient"]] = None,
+        input_preprocessor: Optional[Callable[[str], str]] = None,
+        symbol_resolver: Optional[object] = None,
     ) -> None:
         """모드를 초기화한다.
 
@@ -257,11 +259,23 @@ class OllamaMode(BaseMode):
                 DIP: 본 모드는 HTTP 디테일(host, timeout) 을 모르고 팩토리에만
                 의존한다. ``main.py`` 가 호스트/타임아웃이 캡처된 클로저를
                 만들어 주입한다.
+            input_preprocessor: 사용자 입력을 받아 변환된 문자열을 돌려주는 콜러블
+                (이슈 #17 ``@심볼 자동 확장`` 통합 지점). ``add_user`` 직전에
+                호출되어, 모델로 전송될 user message 본문을 변환한다. ``None``
+                이면 입력을 그대로 사용해 기존 동작을 유지한다 (OCP — 기존 호출자
+                무수정 동작).
+            symbol_resolver: ``/clear`` 가 캐시 무효화에 사용할 심볼 리졸버
+                참조(이슈 #17). ``invalidate()`` 메서드를 가진 객체를 기대한다.
+                ``ClearCommand`` 는 duck-typing 으로 본 속성을 조회한다(ISP —
+                심볼 기능을 쓰지 않는 모드는 그냥 ``None`` 이어도 무방).
         """
         self._client = client
         self._conversation = conversation or Conversation(max_turns=max_turns)
         self._is_chat_client = hasattr(client, "chat")
         self._client_factory = client_factory
+        self._input_preprocessor = input_preprocessor
+        # 외부에서 ``mode.symbol_resolver`` 로 조회할 수 있도록 공개 속성으로 둔다.
+        self.symbol_resolver = symbol_resolver
 
     @property
     def conversation(self) -> Conversation:
@@ -326,14 +340,16 @@ class OllamaMode(BaseMode):
 
     def _handle_legacy(self, user_input: str) -> str:
         """단일 프롬프트 호출(호환 경로). 히스토리를 사용하지 않는다."""
+        prompt = self._preprocess(user_input)
         try:
-            return self._client(user_input)  # type: ignore[operator]
+            return self._client(prompt)  # type: ignore[operator]
         except OllamaError as exc:
             return f"[ollama] {exc}"
 
     def _handle_chat(self, user_input: str) -> str:
         """멀티턴 chat 호출. 성공 시 어시스턴트 응답을 히스토리에 저장한다."""
-        self._conversation.add_user(user_input)
+        prepared = self._preprocess(user_input)
+        self._conversation.add_user(prepared)
         try:
             reply = self._client.chat(self._conversation)  # type: ignore[union-attr]
         except OllamaError as exc:
@@ -343,3 +359,19 @@ class OllamaMode(BaseMode):
             return f"[ollama] {exc}"
         self._conversation.add_assistant(reply)
         return reply
+
+    def _preprocess(self, user_input: str) -> str:
+        """``input_preprocessor`` 가 주입되어 있으면 적용해 반환한다.
+
+        프리프로세서는 어떤 예외도 사용자 메시지 흐름을 깨지 않도록 안전하게
+        처리한다 — 변환 실패 시 원본 입력을 그대로 사용하고 stderr 로 흘리지도
+        않는다(REPL 응답 직후 사용자에게 노이즈를 주지 않기 위함).
+        """
+        preprocessor = self._input_preprocessor
+        if preprocessor is None:
+            return user_input
+        try:
+            transformed = preprocessor(user_input)
+        except Exception:
+            return user_input
+        return transformed if isinstance(transformed, str) else user_input

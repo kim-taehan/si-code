@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:  # pragma: no cover - 타입 힌트 전용 임포트(런타임 순환 참조 회피)
     from sicode.commands.registry import SlashCommandRegistry
+    from sicode.models.registry import ModelRegistry
     from sicode.modes.base import BaseMode
 
 
@@ -68,11 +69,16 @@ class ReplContext:
             만 골라 쓴다).
         argument: ``/system <텍스트>`` 처럼 슬래시 토큰 뒤에 오는 자유 인자 부분.
             앞뒤 공백을 제거한 문자열이며, 인자가 없으면 빈 문자열이다.
+        model_registry: ``/model`` / ``/models`` 슬래시 명령이 사용하는 모델
+            레지스트리(이슈 #14). ``None`` 이면 모델 관련 명령은 "구성되지 않음"
+            안내로 폴백한다. ISP 원칙대로 본 필드를 사용하지 않는 다른 명령은
+            영향을 받지 않는다.
     """
 
     registry: Optional["SlashCommandRegistry"] = None
     mode: Optional["BaseMode"] = None
     argument: str = ""
+    model_registry: Optional["ModelRegistry"] = None
 
 
 class SlashCommand(ABC):

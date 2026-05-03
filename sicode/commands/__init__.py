@@ -17,6 +17,8 @@ from sicode.commands.base import CommandResult, ReplContext, SlashCommand
 from sicode.commands.clear import ClearCommand
 from sicode.commands.exit import ExitCommand
 from sicode.commands.help import HelpCommand
+from sicode.commands.model import ModelCommand
+from sicode.commands.models import ModelsCommand
 from sicode.commands.registry import (
     SlashCommandRegistry,
     default_registry,
@@ -60,6 +62,8 @@ __all__ = [
     "CommandResult",
     "ExitCommand",
     "HelpCommand",
+    "ModelCommand",
+    "ModelsCommand",
     "ReplContext",
     "SlashCommand",
     "SlashCommandRegistry",

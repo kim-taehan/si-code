@@ -238,6 +238,7 @@ class OllamaMode(BaseMode):
         *,
         conversation: Optional[Conversation] = None,
         max_turns: int = DEFAULT_MAX_TURNS,
+        client_factory: Optional[Callable[[str], "OllamaChatClient"]] = None,
     ) -> None:
         """모드를 초기화한다.
 
@@ -249,10 +250,18 @@ class OllamaMode(BaseMode):
                 클라이언트와 함께 쓰면 본 인스턴스는 사용되지 않는다.
             max_turns: ``conversation`` 미지정 시 새 :class:`Conversation` 의
                 최대 턴 수.
+            client_factory: 런타임 모델 전환(:meth:`switch_model`) 시 사용할
+                "모델 이름 -> 새 chat 클라이언트" 팩토리. ``None`` 이면 모델
+                전환 기능을 사용할 수 없으며 :meth:`switch_model` 호출 시
+                :class:`RuntimeError` 가 발생한다.
+                DIP: 본 모드는 HTTP 디테일(host, timeout) 을 모르고 팩토리에만
+                의존한다. ``main.py`` 가 호스트/타임아웃이 캡처된 클로저를
+                만들어 주입한다.
         """
         self._client = client
         self._conversation = conversation or Conversation(max_turns=max_turns)
         self._is_chat_client = hasattr(client, "chat")
+        self._client_factory = client_factory
 
     @property
     def conversation(self) -> Conversation:
@@ -263,6 +272,42 @@ class OllamaMode(BaseMode):
     def supports_multi_turn(self) -> bool:
         """현재 클라이언트가 멀티턴(chat) 모드를 지원하는지 여부."""
         return self._is_chat_client
+
+    @property
+    def current_model(self) -> Optional[str]:
+        """현재 설정된 모델 이름. 클라이언트가 ``model`` 속성을 노출하지 않으면 ``None``.
+
+        ``OllamaChatClient`` / ``OllamaClient`` 둘 다 ``model`` 프로퍼티를 가지므로
+        실제로는 항상 문자열을 반환한다. 다른 형태의 클라이언트(예: 콜러블 객체)
+        가 주입된 경우에는 ``None`` 을 돌려준다.
+        """
+        client = self._client
+        model = getattr(client, "model", None)
+        return model if isinstance(model, str) else None
+
+    def switch_model(self, name: str) -> None:
+        """런타임에 모델을 교체한다.
+
+        ``client_factory`` 로 새 chat 클라이언트를 만들어 ``self._client`` 를
+        교체한다. 기존 :class:`Conversation` (대화 히스토리) 은 그대로 유지하므로
+        이전 맥락이 새 모델에 함께 전달된다(이슈 #14 본문 정책).
+
+        Args:
+            name: 전환할 모델 이름.
+
+        Raises:
+            RuntimeError: ``client_factory`` 가 주입되지 않았을 때.
+        """
+        if self._client_factory is None:
+            raise RuntimeError(
+                "OllamaMode was constructed without a client_factory; "
+                "runtime model switching is unavailable."
+            )
+        new_client = self._client_factory(name)
+        self._client = new_client
+        # ``client_factory`` 가 항상 chat 클라이언트를 만들도록 설계되었지만,
+        # 안전을 위해 duck-typing 으로 재판정한다.
+        self._is_chat_client = hasattr(new_client, "chat")
 
     def handle(self, user_input: str) -> str:
         """사용자 입력을 Ollama 로 보내고 응답을 반환한다.

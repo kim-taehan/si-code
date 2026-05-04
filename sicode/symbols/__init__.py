@@ -15,6 +15,11 @@ REPL 입력에서 ``@ClassName`` / ``@function_name`` 같은 토큰을 발견하
 
 from __future__ import annotations
 
+from sicode.symbols.completer import (
+    MAX_SYMBOL_CANDIDATES,
+    SymbolCompleter,
+    setup_readline_completer,
+)
 from sicode.symbols.expand import (
     DEFAULT_MAX_MATCHES,
     DEFAULT_MAX_SYMBOL_LINES,
@@ -32,9 +37,12 @@ __all__ = [
     "DEFAULT_MAX_FILE_BYTES",
     "DEFAULT_MAX_MATCHES",
     "DEFAULT_MAX_SYMBOL_LINES",
+    "MAX_SYMBOL_CANDIDATES",
+    "SymbolCompleter",
     "SymbolExpander",
     "SymbolIndexer",
     "SymbolRecord",
     "SymbolResolver",
     "expand_user_input",
+    "setup_readline_completer",
 ]

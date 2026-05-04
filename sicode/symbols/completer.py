@@ -1,4 +1,4 @@
-"""readline 기반 ``@심볼`` / ``/명령`` 자동완성기(이슈 #20).
+"""readline 기반 ``@심볼`` / ``@파일`` / ``/명령`` 자동완성기(이슈 #20, #24).
 
 REPL 입력 도중 ``Tab`` 키를 누르면 readline 이 본 모듈의
 :class:`SymbolCompleter` 콜백을 ``state=0, 1, 2, ...`` 순으로 호출한다. 콜백은
@@ -9,35 +9,43 @@ REPL 입력 도중 ``Tab`` 키를 누르면 readline 이 본 모듈의
 
 설계 메모:
     - SRP: 본 모듈은 "텍스트 prefix → 후보 문자열 리스트" 변환과 readline 초기화
-      두 가지 좁은 책임만 갖는다. 후보 데이터 자체(심볼 인덱스, 명령 레지스트리)
-      는 외부 객체에서 받는다.
+      두 가지 좁은 책임만 갖는다. 후보 데이터 자체(심볼 인덱스, 파일 인덱스,
+      슬래시 명령 레지스트리) 는 외부 객체에서 받는다.
     - DIP: :class:`SymbolCompleter` 는 :class:`SymbolResolverProtocol`,
-      :class:`SlashRegistryProtocol` 추상에만 의존한다. 테스트는 작은 fake 객체를
-      주입해 readline 없이 콜백을 검증할 수 있다.
+      :class:`SlashRegistryProtocol` 추상에만 의존한다. 테스트는 작은 fake
+      객체를 주입해 readline 없이 콜백을 검증할 수 있다.
     - ISP: 외부에 강요하는 메서드가 ``all_records()`` / ``commands()`` 두 개로
-      쪼개져 있어 큰 인터페이스 한 덩어리에 엮이지 않는다.
+      쪼개져 있어 큰 인터페이스 한 덩어리에 엮이지 않는다. 본 컴플리터는
+      ``all_records()`` 결과를 자체적으로 :class:`SymbolRecord` /
+      :class:`FileRecord` 로 분리해 다룬다(이슈 #24).
     - 안전성: ``import readline`` 이 실패하는 환경(예: Windows 기본 파이썬,
       pyreadline3 미설치)에서도 :func:`setup_readline_completer` 는 조용히 리턴해
       REPL 본체가 동작 가능한 상태를 유지한다(graceful fallback).
 
-수용 기준 매핑(이슈 #20):
-    - ``@`` prefix 후보: :meth:`SymbolCompleter._complete_symbol`.
-    - ``/`` prefix 후보: :meth:`SymbolCompleter._complete_slash`.
-    - 매치 0건일 때 ``state=0`` 에 ``None`` 반환: :meth:`SymbolCompleter.__call__`.
-    - 후보 상한 20건: :data:`MAX_SYMBOL_CANDIDATES`.
-    - readline 미존재 환경에서 예외 없이 노옵: :func:`setup_readline_completer`.
+수용 기준 매핑(이슈 #24):
+    - ``@README`` 탭 → ``@README.md`` 후보 노출(확장자 생략 보정).
+    - ``@sicode/r`` 탭 → ``@sicode/repl.py`` 후보 노출(경로 segment prefix).
+    - 후보는 심볼 + 파일 합산 최대 :data:`MAX_CANDIDATES` 건, 알파벳 정렬.
 """
 
 from __future__ import annotations
 
 from typing import Callable, List, Optional, Protocol
 
-from sicode.symbols.indexer import SymbolRecord
+from sicode.symbols.indexer import FileRecord, IndexedRecord, SymbolRecord
 
 
-#: 한 번의 ``@`` prefix 자동완성에서 노출할 최대 후보 수.
-#: 이슈 #20 정책: 인덱스에 심볼이 더 많아도 20건만 반환한다.
+#: 한 번의 ``@`` prefix 자동완성에서 노출할 최대 후보 수(심볼 + 파일 합산).
+#: 이슈 #24 정책: 심볼·파일 후보를 각각 산출 후 합쳐 알파벳 정렬, 상한 20.
+MAX_CANDIDATES: int = 20
+
+#: 심볼 후보의 개별 상한(이슈 #20 호환). 합산 후 :data:`MAX_CANDIDATES` 로 다시
+#: 잘릴 수 있다.
 MAX_SYMBOL_CANDIDATES: int = 20
+
+#: 파일 후보의 개별 상한(이슈 #24). 합산 후 :data:`MAX_CANDIDATES` 로 다시
+#: 잘릴 수 있다.
+MAX_FILE_CANDIDATES: int = 20
 
 #: ``readline.set_completer_delims`` 에 설정할 구분자 문자열.
 #: 기본 delims 에는 ``@`` 가 포함돼 있어 ``@Symbol`` 입력 도중 Tab 을 누르면
@@ -49,7 +57,7 @@ COMPLETER_DELIMS: str = " \t\n"
 class SymbolResolverProtocol(Protocol):
     """후보 산출에 필요한 :class:`SymbolResolver` 의 최소 계약(ISP)."""
 
-    def all_records(self) -> List[SymbolRecord]:  # pragma: no cover - 프로토콜
+    def all_records(self) -> "List[IndexedRecord]":  # pragma: no cover - 프로토콜
         ...
 
 
@@ -72,7 +80,7 @@ class _NamedCommand(Protocol):
 
 
 class SymbolCompleter:
-    """``@심볼`` 과 ``/명령`` 자동완성을 제공하는 readline 콜백.
+    """``@심볼`` / ``@파일`` / ``/명령`` 자동완성을 제공하는 readline 콜백.
 
     한 인스턴스는 ``(resolver, registry)`` 쌍 한 묶음을 표현한다. ``state=0``
     일 때 ``text`` 의 prefix 분기에 따라 후보 리스트를 1회 계산해 캐시하고,
@@ -88,11 +96,11 @@ class SymbolCompleter:
         """완성기를 초기화한다.
 
         Args:
-            resolver: ``@`` 후보 산출에 사용할 심볼 리졸버. 본 객체는 ``all_records()``
-                만 호출되며, 캐시/invalidate 정책은 :class:`SymbolResolver` 본체가
-                책임진다.
-            registry: ``/`` 후보 산출에 사용할 슬래시 명령 레지스트리. ``None`` 이면
-                슬래시 자동완성은 후보 0건이 된다.
+            resolver: ``@`` 후보 산출에 사용할 심볼 리졸버. 본 객체는
+                ``all_records()`` 만 호출되며, 캐시/invalidate 정책은
+                :class:`SymbolResolver` 본체가 책임진다.
+            registry: ``/`` 후보 산출에 사용할 슬래시 명령 레지스트리. ``None``
+                이면 슬래시 자동완성은 후보 0건이 된다.
         """
         self._resolver: SymbolResolverProtocol = resolver
         self._registry: Optional[SlashRegistryProtocol] = registry
@@ -132,7 +140,7 @@ class SymbolCompleter:
     def _build_candidates(self, text: str) -> List[str]:
         """``text`` 의 prefix 에 따라 후보 리스트를 만든다.
 
-        - ``@...`` : 심볼 prefix 일치(대소문자 구분, 알파벳 오름차순, 최대 20).
+        - ``@...`` : 심볼 prefix 일치 + 파일 prefix 일치를 합산(이슈 #24).
         - ``/...`` : 슬래시 명령 prefix 일치(알파벳 오름차순).
         - 그 외   : 빈 리스트(자동완성 비활성).
         """
@@ -143,20 +151,47 @@ class SymbolCompleter:
         return []
 
     def _complete_symbol(self, prefix: str) -> List[str]:
-        """심볼 이름 prefix 일치 후보를 ``@Name`` 형태로 반환한다.
+        """``@`` 토큰 prefix 일치 후보를 ``@Name`` / ``@path/file`` 로 반환한다.
 
-        매칭 정책(이슈 #20):
-            - 대소문자 구분 prefix 일치.
-            - 같은 이름 중복 제거(파일이 달라도 이름이 같으면 후보 하나).
-            - 알파벳 오름차순 정렬.
-            - 최대 :data:`MAX_SYMBOL_CANDIDATES` 건.
+        매칭 정책(이슈 #24):
+            - 심볼 후보(:meth:`_complete_symbol_names`) 와 파일 후보
+              (:meth:`_complete_file_paths`) 를 각각 산출한다(SRP — 두 종류의
+              매칭 규칙을 별도 헬퍼로 격리).
+            - 두 결과를 합쳐 알파벳 오름차순으로 정렬하고 상위
+              :data:`MAX_CANDIDATES` 건을 반환한다.
+            - 같은 토큰을 두 종류가 모두 만들 가능성은 낮지만, 중복은
+              :class:`dict` 로 제거한다(파이썬 3.7+ 삽입 순서 보존).
 
         ``prefix`` 가 빈 문자열이면 ``@`` 만 입력된 상태이므로 인덱스 전체에서
-        앞 20건을 보여 준다(이미 정렬·중복 제거된 결과).
+        앞 :data:`MAX_CANDIDATES` 건을 보여 준다.
         """
         records = self._resolver.all_records()
+
+        symbol_candidates = self._complete_symbol_names(records, prefix)
+        file_candidates = self._complete_file_paths(records, prefix)
+
+        merged: "dict[str, None]" = {}
+        for name in symbol_candidates:
+            merged.setdefault(name, None)
+        for name in file_candidates:
+            merged.setdefault(name, None)
+
+        sorted_candidates = sorted(merged.keys())
+        return sorted_candidates[:MAX_CANDIDATES]
+
+    def _complete_symbol_names(
+        self, records: "List[IndexedRecord]", prefix: str
+    ) -> List[str]:
+        """심볼 이름 prefix 매칭(이슈 #20 호환).
+
+        - 대소문자 구분 prefix.
+        - 같은 이름 중복 제거(파일이 달라도 이름이 같으면 후보 하나).
+        - 알파벳 오름차순, 최대 :data:`MAX_SYMBOL_CANDIDATES` 건.
+        """
         seen: "dict[str, None]" = {}
         for record in records:
+            if not isinstance(record, SymbolRecord):
+                continue
             name = record.name
             if not name.startswith(prefix):
                 continue
@@ -166,6 +201,35 @@ class SymbolCompleter:
         names = sorted(seen.keys())
         limited = names[:MAX_SYMBOL_CANDIDATES]
         return [f"@{name}" for name in limited]
+
+    def _complete_file_paths(
+        self, records: "List[IndexedRecord]", prefix: str
+    ) -> List[str]:
+        """파일 경로/이름 prefix 매칭(이슈 #24).
+
+        매칭 규칙:
+            - ``rel_path`` 가 ``prefix`` 로 시작(전체 경로 prefix). 예:
+              ``sicode/r`` → ``sicode/repl.py``.
+            - 파일 이름 ``name`` 이 ``prefix`` 로 시작(루트 파일 / segment).
+              예: ``READ`` → ``README.md``.
+            - 파일은 같은 경로가 인덱스에 한 건만 있으므로 중복 제거는 ``dict``
+              keyed-on rel_path 로 처리.
+            - 알파벳 오름차순(``rel_path`` 기준), 최대
+              :data:`MAX_FILE_CANDIDATES` 건.
+
+        ``prefix`` 가 빈 문자열이면 모든 파일이 후보가 된다(상한 적용).
+        """
+        seen: "dict[str, None]" = {}
+        for record in records:
+            if not isinstance(record, FileRecord):
+                continue
+            rel_path = record.rel_path
+            name = record.name
+            if rel_path.startswith(prefix) or name.startswith(prefix):
+                seen.setdefault(rel_path, None)
+        paths = sorted(seen.keys())
+        limited = paths[:MAX_FILE_CANDIDATES]
+        return [f"@{path}" for path in limited]
 
     def _complete_slash(self, prefix: str) -> List[str]:
         """슬래시 명령 이름 prefix 일치 후보를 ``/name`` 형태로 반환한다.
@@ -233,6 +297,8 @@ _ImportHook = Callable[[], object]
 
 __all__ = [
     "COMPLETER_DELIMS",
+    "MAX_CANDIDATES",
+    "MAX_FILE_CANDIDATES",
     "MAX_SYMBOL_CANDIDATES",
     "SlashRegistryProtocol",
     "SymbolCompleter",

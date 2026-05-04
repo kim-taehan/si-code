@@ -32,7 +32,12 @@ from sicode.modes.ollama import (
 )
 from sicode.modes.ollama_chat import OllamaChatClient
 from sicode.repl import run_repl
-from sicode.symbols import SymbolExpander, SymbolResolver
+from sicode.symbols import (
+    SymbolCompleter,
+    SymbolExpander,
+    SymbolResolver,
+    setup_readline_completer,
+)
 
 
 #: 환경 변수 이름들. 한 곳에 모아두어 테스트와 도큐먼트가 일관되게 참조한다.
@@ -237,6 +242,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # 본 단계는 REPL 본문(repl.py) 변경 없이 동작한다 (OCP).
         default_registry.register(ModelCommand(model_registry=model_registry))
         default_registry.register(ModelsCommand(model_registry=model_registry))
+    # 이슈 #20: REPL 시작 직전에 readline Tab 자동완성을 1회 활성화한다.
+    # ``mode.symbol_resolver`` 가 :class:`SymbolResolver` 면 같은 인스턴스를
+    # 자동완성과 ``input_preprocessor`` 가 공유하므로 ``/clear`` 의 invalidate()
+    # 가 다음 Tab 자동완성에도 자연스럽게 반영된다(캐시 일관성).
+    # readline 모듈이 없거나 초기화에 실패해도 본 함수는 예외를 밖으로 던지지
+    # 않는다 — REPL 본문은 자동완성 없이도 정상 동작해야 한다 (graceful fallback).
+    _activate_readline_completion(mode)
+
     # ``builtins.input`` / ``builtins.print`` 를 호출 시점에 조회해서 전달한다.
     # 이렇게 해야 테스트에서 ``monkeypatch.setattr("builtins.input", ...)`` 같은
     # 패치가 정상적으로 적용된다.
@@ -245,6 +258,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         input_fn=lambda prompt: builtins.input(prompt),
         output_fn=lambda line: builtins.print(line),
     )
+
+
+def _activate_readline_completion(mode: BaseMode) -> None:
+    """모드에서 :class:`SymbolResolver` 를 꺼내 readline 자동완성을 활성화한다.
+
+    SRP: 자동완성 활성화 절차(리졸버 추출 → 컴플리터 생성 → readline 바인딩)를
+    한 함수에 모아 ``main()`` 흐름이 짧고 읽기 쉽게 유지된다.
+
+    실패 분기:
+        - ``mode`` 가 ``symbol_resolver`` 속성을 갖지 않거나 ``None`` 이면 자동완성
+          기능을 켜지 않는다(다른 모드와의 하위 호환성).
+        - readline 미존재/초기화 실패는 :func:`setup_readline_completer` 가 내부
+          에서 흡수해 ``False`` 를 돌려준다 — 본 함수도 예외를 밖으로 던지지
+          않는다.
+    """
+    resolver = getattr(mode, "symbol_resolver", None)
+    if resolver is None:
+        return
+    if not hasattr(resolver, "all_records"):
+        # 다른 형태의 객체가 들어 있으면 자동완성 후보 산출이 불가능하므로 패스.
+        return
+    completer = SymbolCompleter(resolver, registry=default_registry)
+    setup_readline_completer(completer, default_registry)
 
 
 if __name__ == "__main__":  # pragma: no cover - 직접 실행 진입점

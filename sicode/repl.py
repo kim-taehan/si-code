@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Callable, Iterable, Optional
 
 from sicode import __version__
+from sicode.bang import handle_bang_input, is_bang_input
 from sicode.commands.base import CommandAction
 from sicode.commands.registry import (
     SlashCommandRegistry,
@@ -44,6 +45,8 @@ def build_welcome_message(mode: BaseMode, version: str = __version__) -> str:
         "Ollama 서버가 실행 중이어야 합니다 (기본: http://localhost:11434).\n"
         "대화 히스토리가 자동으로 유지됩니다. /clear 로 초기화, "
         "/system <텍스트> 로 시스템 메시지 설정.\n"
+        "!cmd 로 셸 명령을 직접 실행할 수 있습니다 "
+        "(예: !ls, !git status). 주의: 시스템에 직접 실행됩니다.\n"
         "Type 'exit' or 'quit' to leave. Press Ctrl+C / Ctrl+D to abort.\n"
         "Type /help to see available slash commands.\n"
     )
@@ -103,6 +106,13 @@ def run_repl(
             output_fn("")
             output_fn("Interrupted. Goodbye!")
             return 0
+
+        # ``!cmd`` bang 분기는 슬래시 명령과 동급의 우선순위로, mode.handle 보다
+        # 먼저 처리한다. 멀티턴 히스토리에 영향을 주지 않으며 슬래시 명령 디스패처
+        # 도 호출하지 않는다 (이슈 #18).
+        if is_bang_input(user_input):
+            output_fn(handle_bang_input(user_input))
+            continue
 
         # 슬래시 명령은 mode.handle 보다 우선 처리한다 (LLM 미전송).
         if is_slash_command(user_input):
